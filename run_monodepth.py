@@ -2,9 +2,13 @@
 """
 import os
 import glob
+from pathlib import Path
+
 import torch
 import cv2
 import argparse
+
+import tqdm
 
 import util.io
 
@@ -14,10 +18,11 @@ from dpt.models import DPTDepthModel
 from dpt.midas_net import MidasNet_large
 from dpt.transforms import Resize, NormalizeImage, PrepareForNet
 
-#from util.misc import visualize_attention
+
+# from util.misc import visualize_attention
 
 
-def run(input_path, output_path, model_path, model_type="dpt_hybrid", optimize=True):
+def run(input_path, output_path, model_path, model_type="dpt_large", optimize=True):
     """Run MonoDepthNN to compute depth maps.
 
     Args:
@@ -109,7 +114,6 @@ def run(input_path, output_path, model_path, model_type="dpt_hybrid", optimize=T
     )
 
     model.eval()
-
     if optimize == True and device == torch.device("cuda"):
         model = model.to(memory_format=torch.channels_last)
         model = model.half()
@@ -117,87 +121,91 @@ def run(input_path, output_path, model_path, model_type="dpt_hybrid", optimize=T
     model.to(device)
 
     # get input
+    videos = os.listdir(input_path)
     img_names = glob.glob(os.path.join(input_path, "*"))
     num_images = len(img_names)
 
-    # create output folder
-    os.makedirs(output_path, exist_ok=True)
-
     print("start processing")
-    for ind, img_name in enumerate(img_names):
-        if os.path.isdir(img_name):
-            continue
 
-        print("  processing {} ({}/{})".format(img_name, ind + 1, num_images))
-        # input
+    for video_ctr, vid_id in enumerate(videos):
+        # create output folder
+        os.makedirs(os.path.join(output_path, vid_id), exist_ok=True)
+        img_names = sorted(os.listdir(os.path.join(input_path, vid_id)))
+        img_names = [i for i in img_names if i.endswith(".png")]
+        print("Processing:", vid_id)
+        for ind, img_name in tqdm.tqdm(enumerate(img_names)):
+            if os.path.isdir(img_name):
+                continue
+            img_name = os.path.join(input_path, vid_id, img_name)
+            # input
 
-        img = util.io.read_image(img_name)
+            img = util.io.read_image(img_name)
 
-        if args.kitti_crop is True:
-            height, width, _ = img.shape
-            top = height - 352
-            left = (width - 1216) // 2
-            img = img[top : top + 352, left : left + 1216, :]
+            if args.kitti_crop is True:
+                height, width, _ = img.shape
+                top = height - 352
+                left = (width - 1216) // 2
+                img = img[top: top + 352, left: left + 1216, :]
 
-        img_input = transform({"image": img})["image"]
+            img_input = transform({"image": img})["image"]
 
-        # compute
-        with torch.no_grad():
-            sample = torch.from_numpy(img_input).to(device).unsqueeze(0)
+            # compute
+            with torch.no_grad():
+                sample = torch.from_numpy(img_input).to(device).unsqueeze(0)
 
-            if optimize == True and device == torch.device("cuda"):
-                sample = sample.to(memory_format=torch.channels_last)
-                sample = sample.half()
+                if optimize == True and device == torch.device("cuda"):
+                    sample = sample.to(memory_format=torch.channels_last)
+                    sample = sample.half()
 
-            prediction = model.forward(sample)
-            prediction = (
-                torch.nn.functional.interpolate(
-                    prediction.unsqueeze(1),
-                    size=img.shape[:2],
-                    mode="bicubic",
-                    align_corners=False,
+                prediction = model.forward(sample)
+                prediction = (
+                    torch.nn.functional.interpolate(
+                        prediction.unsqueeze(1),
+                        # size=img.shape[:2],
+                        size=(512, 1024),
+                        mode="bicubic",
+                        align_corners=False,
+                    )
+                    .squeeze()
+                    .cpu()
+                    .numpy()
                 )
-                .squeeze()
-                .cpu()
-                .numpy()
+
+                if model_type == "dpt_hybrid_kitti":
+                    prediction *= 256
+
+                if model_type == "dpt_hybrid_nyu":
+                    prediction *= 1000.0
+
+            filename = os.path.join(
+                output_path, vid_id, os.path.splitext(os.path.basename(img_name))[0]
             )
 
-            if model_type == "dpt_hybrid_kitti":
-                prediction *= 256
-
-            if model_type == "dpt_hybrid_nyu":
-                prediction *= 1000.0
-
-        filename = os.path.join(
-            output_path, os.path.splitext(os.path.basename(img_name))[0]
-        )
-        util.io.write_depth(filename, prediction, bits=2, absolute_depth=args.absolute_depth)
-
-    print("finished")
+            util.io.write_depth(filename, prediction, bits=1, absolute_depth=args.absolute_depth)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "-i", "--input_path", default="input", help="folder with input images"
+        "-i", "--input_path", required=True, help="folder with input images"
     )
 
     parser.add_argument(
         "-o",
         "--output_path",
-        default="output_monodepth",
+        required=True,
         help="folder for output images",
     )
 
     parser.add_argument(
-        "-m", "--model_weights", default=None, help="path to model weights"
+        "-m", "--model_weights", required=True, help="path to model weights"
     )
 
     parser.add_argument(
         "-t",
         "--model_type",
-        default="dpt_hybrid",
+        default="dpt_large",
         help="model type [dpt_large|dpt_hybrid|midas_v21]",
     )
 
