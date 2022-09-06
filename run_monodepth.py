@@ -33,7 +33,7 @@ def run(input_path, output_path, model_path, model_type="dpt_large", optimize=Tr
     print("initialize")
 
     # select device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print("device: %s" % device)
 
     # load network
@@ -126,8 +126,13 @@ def run(input_path, output_path, model_path, model_type="dpt_large", optimize=Tr
     num_images = len(img_names)
 
     print("start processing")
+    output_videos = os.listdir(output_path)
 
-    for video_ctr, vid_id in enumerate(videos):
+    remaining_videos = [v for v in videos if v not in output_videos]
+    n_rem = len(remaining_videos) // 2
+
+    remaining_videos = remaining_videos[:n_rem]
+    for video_ctr, vid_id in enumerate(remaining_videos):
         # create output folder
         os.makedirs(os.path.join(output_path, vid_id), exist_ok=True)
         img_names = sorted(os.listdir(os.path.join(input_path, vid_id)))
@@ -148,6 +153,7 @@ def run(input_path, output_path, model_path, model_type="dpt_large", optimize=Tr
                 img = img[top: top + 352, left: left + 1216, :]
 
             img_input = transform({"image": img})["image"]
+
 
             # compute
             with torch.no_grad():
